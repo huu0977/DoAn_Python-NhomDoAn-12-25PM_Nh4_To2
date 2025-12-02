@@ -1,7 +1,12 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from tkcalendar import DateEntry
 import pyodbc
+import xlsxwriter  # <--- Thư viện bạn yêu cầu
+
+
+
+
 
 
 # ====== 1. CẤU HÌNH KẾT NỐI ======
@@ -9,7 +14,7 @@ def connect_db():
     try:
         conn = pyodbc.connect(
             "DRIVER={SQL Server};"
-            "SERVER=LAPTOP-NI0S7IB6\SQL2017EXPRESS;"  # <--- HÃY SỬA TÊN SERVER CỦA BẠN Ở ĐÂY
+            "SERVER=LAPTOP-NI0S7IB6\\SQL2017EXPRESS;"  # <--- Kiểm tra tên Server
             "DATABASE=QLDIEMSV;"
             "Trusted_Connection=yes;"
         )
@@ -19,26 +24,37 @@ def connect_db():
         return None
 
 
+# ====== HÀM CĂN GIỮA MÀN HÌNH ======
+def center_window(window, width, height):
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    window.geometry(f'{width}x{height}+{x}+{y}')
+
+
 # =========================================================================
-# TAB 1: LOGIC QUẢN LÝ SINH VIÊN
+# LOGIC QUẢN LÝ SINH VIÊN (TAB 1)
 # =========================================================================
 def load_sv(tree):
     for i in tree.get_children(): tree.delete(i)
     conn = connect_db()
     if conn:
-        cur = conn.cursor()
-        cur.execute("SELECT MaSV, HoTen, NgaySinh, GioiTinh, MaLop, MaKhoa FROM SINHVIEN")
-        for row in cur.fetchall(): tree.insert("", tk.END, values=list(row))
-        conn.close()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT MaSV, HoTen, NgaySinh, GioiTinh, MaLop, MaKhoa FROM SINHVIEN")
+            for row in cur.fetchall(): tree.insert("", tk.END, values=list(row))
+        except Exception as e:
+            messagebox.showerror("Lỗi", str(e))
+        finally:
+            conn.close()
 
 
 def them_sv(tree, e_ma, e_ten, e_ngay, e_gt, e_lop, e_khoa):
     masv, hoten = e_ma.get(), e_ten.get()
     ngaysinh = str(e_ngay.get_date())
     makhoa = e_khoa.get()
-
     if not masv or not hoten: return messagebox.showwarning("Lỗi", "Thiếu Mã SV hoặc Tên")
-
     conn = connect_db()
     if conn:
         try:
@@ -58,20 +74,24 @@ def xoa_sv(tree):
     sel = tree.selection()
     if not sel: return
     masv = tree.item(sel)["values"][0]
-    if messagebox.askyesno("Xóa", f"Xóa SV {masv} sẽ mất hết điểm của SV này. Tiếp tục?"):
+    if messagebox.askyesno("Xóa", f"Xóa SV {masv} sẽ mất hết điểm. Tiếp tục?"):
         conn = connect_db()
         if conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM DIEM WHERE MaSV=?", (masv,))  # Xóa điểm trước
-            cur.execute("DELETE FROM SINHVIEN WHERE MaSV=?", (masv,))  # Xóa SV sau
-            conn.commit()
-            conn.close()
-            load_sv(tree)
-            messagebox.showinfo("Xong", "Đã xóa!")
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM DIEM WHERE MaSV=?", (masv,))
+                cur.execute("DELETE FROM SINHVIEN WHERE MaSV=?", (masv,))
+                conn.commit()
+                load_sv(tree)
+                messagebox.showinfo("Xong", "Đã xóa!")
+            except Exception as e:
+                messagebox.showerror("Lỗi", str(e))
+            finally:
+                conn.close()
 
 
 # =========================================================================
-# TAB 2: LOGIC QUẢN LÝ ĐIỂM
+# LOGIC QUẢN LÝ ĐIỂM & XUẤT EXCEL (TAB 2)
 # =========================================================================
 def load_diem(tree):
     for i in tree.get_children(): tree.delete(i)
@@ -79,13 +99,8 @@ def load_diem(tree):
     if conn:
         try:
             cur = conn.cursor()
-            # Kỹ thuật JOIN bảng để lấy Tên Môn thay vì chỉ hiện ID
             sql = """
-                SELECT 
-                    SV.MaSV, SV.HoTen, 
-                    MH.TenMon, 
-                    D.DiemQuaTrinh, D.DiemGiuaKy, D.DiemCuoiKy, D.DiemTongKet,
-                    HP.MaHocPhan
+                SELECT SV.MaSV, SV.HoTen, MH.TenMon, D.DiemQuaTrinh, D.DiemGiuaKy, D.DiemCuoiKy, D.DiemTongKet
                 FROM DIEM D
                 JOIN SINHVIEN SV ON D.MaSV = SV.MaSV
                 JOIN HOCPHAN HP ON D.MaHocPhan = HP.MaHocPhan
@@ -93,140 +108,170 @@ def load_diem(tree):
             """
             cur.execute(sql)
             for row in cur.fetchall():
-                # Xử lý xếp loại đơn giản
                 tong = row[6] if row[6] else 0
                 ketqua = "ĐẬU" if tong >= 4.0 else "RỚT"
-
-                # Chèn vào bảng (Thêm cột Kết quả vào cuối)
                 data = list(row)
-                data.insert(7, ketqua)  # Chèn chữ Đậu/Rớt trước cột Mã HP ẩn
+                data.append(ketqua)
                 tree.insert("", tk.END, values=data)
         except Exception as e:
-            messagebox.showerror("Lỗi Tải Điểm", str(e))
+            messagebox.showerror("Lỗi", str(e))
         finally:
             conn.close()
 
 
-def tim_kiem_diem(tree, keyword):
-
-    for i in tree.get_children(): tree.delete(i)
+def xuat_excel_xlsxwriter():
+    """Hàm xuất Excel sử dụng thư viện xlsxwriter"""
     conn = connect_db()
-    if conn:
-        cur = conn.cursor()
+    if not conn: return
+
+    try:
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                 filetypes=[("Excel files", "*.xlsx")],
+                                                 title="Lưu file Bảng Điểm")
+        if not file_path: return
+
+
+        cursor = conn.cursor()
         sql = """
-            SELECT SV.MaSV, SV.HoTen, MH.TenMon, D.DiemQuaTrinh, D.DiemGiuaKy, D.DiemCuoiKy, D.DiemTongKet, HP.MaHocPhan
+            SELECT SV.MaSV, SV.HoTen, MH.TenMon, 
+                   D.DiemQuaTrinh, D.DiemGiuaKy, D.DiemCuoiKy, D.DiemTongKet,
+                   CASE WHEN D.DiemTongKet >= 4.0 THEN N'ĐẬU' ELSE N'RỚT' END
             FROM DIEM D
             JOIN SINHVIEN SV ON D.MaSV = SV.MaSV
             JOIN HOCPHAN HP ON D.MaHocPhan = HP.MaHocPhan
             JOIN MONHOC MH ON HP.MaMon = MH.MaMon
-            WHERE SV.HoTen LIKE ? OR SV.MaSV LIKE ?
         """
-        cur.execute(sql, (f'%{keyword}%', f'%{keyword}%'))
-        for row in cur.fetchall():
-            tong = row[6] if row[6] else 0
-            ketqua = "ĐẬU" if tong >= 4.0 else "RỚT"
-            data = list(row)
-            data.insert(7, ketqua)
-            tree.insert("", tk.END, values=data)
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+
+
+        workbook = xlsxwriter.Workbook(file_path)
+        worksheet = workbook.add_worksheet("BangDiem")
+
+
+        worksheet.set_column('A:A', 5)  # STT
+        worksheet.set_column('B:B', 15)  # Mã SV
+        worksheet.set_column('C:C', 25)  # Họ Tên
+        worksheet.set_column('D:D', 20)  # Môn Học
+        worksheet.set_column('E:H', 10)  # Các cột điểm
+        worksheet.set_column('I:I', 15)  # Kết quả
+
+
+        bold_format = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#D7E4BC', 'align': 'center'})
+        normal_format = workbook.add_format({'border': 1})
+        center_format = workbook.add_format({'border': 1, 'align': 'center'})
+
+
+        headers = ['STT', 'MÃ SV', 'HỌ TÊN', 'MÔN HỌC', 'ĐIỂM QT', 'ĐIỂM GK', 'ĐIỂM CK', 'TỔNG', 'KẾT QUẢ']
+        for col, text in enumerate(headers):
+            worksheet.write(0, col, text, bold_format)
+
+
+        for i, row in enumerate(rows):
+            row_num = i + 1
+
+            worksheet.write(row_num, 0, i + 1, center_format)  # Cột STT
+            worksheet.write(row_num, 1, row[0], center_format)  # Mã SV
+            worksheet.write(row_num, 2, row[1], normal_format)  # Họ Tên
+            worksheet.write(row_num, 3, row[2], normal_format)  # Môn
+            worksheet.write(row_num, 4, row[3], center_format)  # QT
+            worksheet.write(row_num, 5, row[4], center_format)  # GK
+            worksheet.write(row_num, 6, row[5], center_format)  # CK
+            worksheet.write(row_num, 7, row[6], center_format)  # Tổng
+
+
+            if row[7] == 'RỚT':
+                red_format = workbook.add_format({'border': 1, 'align': 'center', 'font_color': 'red', 'bold': True})
+                worksheet.write(row_num, 8, row[7], red_format)
+            else:
+                worksheet.write(row_num, 8, row[7], center_format)
+
+
+
+        workbook.close()
+        messagebox.showinfo("Thành công", f"Đã xuất file Excel tại:\n{file_path}")
+
+    except Exception as e:
+        messagebox.showerror("Lỗi Xuất Excel", str(e))
+    finally:
         conn.close()
 
 
 def popup_nhap_diem(parent_root, tree_diem):
     win = tk.Toplevel(parent_root)
-    win.title("Nhập / Sửa Điểm")
-    win.geometry("400x500")
+    win.title("Nhập Điểm")
+    center_window(win, 400, 500)  # Căn giữa popup
 
-    tk.Label(win, text="NHẬP ĐIỂM SINH VIÊN", font=("bold", 14), fg="blue").pack(pady=10)
-
-    # Form nhập
+    tk.Label(win, text="NHẬP ĐIỂM", font=("bold", 14), fg="blue").pack(pady=10)
     f = tk.Frame(win);
     f.pack(pady=5)
-
-    tk.Label(f, text="Mã Sinh Viên:").grid(row=0, column=0, pady=5, sticky="e")
+    tk.Label(f, text="Mã SV:").grid(row=0, column=0);
     e_msv = tk.Entry(f);
     e_msv.grid(row=0, column=1)
-
-    tk.Label(f, text="Mã Học Phần (ID):").grid(row=1, column=0, pady=5, sticky="e")
+    tk.Label(f, text="Mã HP:").grid(row=1, column=0);
     e_mhp = tk.Entry(f);
     e_mhp.grid(row=1, column=1)
-    tk.Label(f, text="(Xem bảng HOCPHAN trong SQL)", font=("Arial", 7), fg="gray").grid(row=2, column=1)
-
-    tk.Label(f, text="Điểm Quá Trình (20%):").grid(row=3, column=0, pady=5, sticky="e")
+    tk.Label(f, text="Điểm QT (20%):").grid(row=3, column=0);
     e_qt = tk.Entry(f);
     e_qt.grid(row=3, column=1)
-
-    tk.Label(f, text="Điểm Giữa Kỳ (30%):").grid(row=4, column=0, pady=5, sticky="e")
+    tk.Label(f, text="Điểm GK (30%):").grid(row=4, column=0);
     e_gk = tk.Entry(f);
     e_gk.grid(row=4, column=1)
-
-    tk.Label(f, text="Điểm Cuối Kỳ (50%):").grid(row=5, column=0, pady=5, sticky="e")
+    tk.Label(f, text="Điểm CK (50%):").grid(row=5, column=0);
     e_ck = tk.Entry(f);
     e_ck.grid(row=5, column=1)
 
-    lbl_kq = tk.Label(win, text="...", font=("bold", 12), fg="red")
-    lbl_kq.pack(pady=10)
-
-    def xu_ly_luu():
-        msv, mhp = e_msv.get(), e_mhp.get()
+    def luu():
         try:
             qt, gk, ck = float(e_qt.get()), float(e_gk.get()), float(e_ck.get())
         except:
-            return messagebox.showerror("Lỗi", "Điểm phải là số!")
-
-        if not (0 <= qt <= 10 and 0 <= gk <= 10 and 0 <= ck <= 10):
-            return messagebox.showerror("Lỗi", "Điểm từ 0-10")
-
+            return messagebox.showerror("Lỗi", "Điểm phải là số")
+        if not (0 <= qt <= 10 and 0 <= gk <= 10 and 0 <= ck <= 10): return messagebox.showerror("Lỗi", "Điểm 0-10")
         tong = round(qt * 0.2 + gk * 0.3 + ck * 0.5, 2)
-        lbl_kq.config(text=f"Tổng kết: {tong}")
-
         conn = connect_db()
         if conn:
             try:
                 cur = conn.cursor()
-
-                cur.execute("SELECT * FROM DIEM WHERE MaSV=? AND MaHocPhan=?", (msv, mhp))
+                cur.execute("SELECT * FROM DIEM WHERE MaSV=? AND MaHocPhan=?", (e_msv.get(), e_mhp.get()))
                 if cur.fetchone():
-                    sql = "UPDATE DIEM SET DiemQuaTrinh=?, DiemGiuaKy=?, DiemCuoiKy=?, DiemTongKet=? WHERE MaSV=? AND MaHocPhan=?"
-                    cur.execute(sql, (qt, gk, ck, tong, msv, mhp))
+                    cur.execute(
+                        "UPDATE DIEM SET DiemQuaTrinh=?, DiemGiuaKy=?, DiemCuoiKy=?, DiemTongKet=? WHERE MaSV=? AND MaHocPhan=?",
+                        (qt, gk, ck, tong, e_msv.get(), e_mhp.get()))
                 else:
-                    sql = "INSERT INTO DIEM (MaSV, MaHocPhan, DiemQuaTrinh, DiemGiuaKy, DiemCuoiKy, DiemTongKet) VALUES (?, ?, ?, ?, ?, ?)"
-                    cur.execute(sql, (msv, mhp, qt, gk, ck, tong))
+                    cur.execute(
+                        "INSERT INTO DIEM (MaSV, MaHocPhan, DiemQuaTrinh, DiemGiuaKy, DiemCuoiKy"
+                        ", DiemTongKet) VALUES (?, ?, ?, ?, ?, ?)",
+                        (e_msv.get(), e_mhp.get(), qt, gk, ck, tong))
                 conn.commit()
-                messagebox.showinfo("OK", "Đã lưu điểm!")
-                load_diem(tree_diem)  # Load lại bảng điểm ở giao diện chính
+                messagebox.showinfo("OK", f"Đã lưu! Tổng: {tong}")
+                load_diem(tree_diem)
                 win.destroy()
             except Exception as e:
-                messagebox.showerror("Lỗi SQL", f"Kiểm tra lại Mã SV hoặc Mã HP.\n{e}")
+                messagebox.showerror("Lỗi SQL", str(e))
             finally:
                 conn.close()
 
-    tk.Button(win, text="LƯU ĐIỂM", bg="blue", fg="white", font=("bold", 10), command=xu_ly_luu).pack(pady=5)
+    tk.Button(win, text="LƯU", bg="blue", fg="white", command=luu).pack(pady=15)
 
 
 # =========================================================================
-# GIAO DIỆN CHÍNH (MAIN WINDOW)
+# GIAO DIỆN CHÍNH
 # =========================================================================
 root = tk.Tk()
-root.title("HỆ THỐNG QUẢN LÝ ĐIỂM SINH VIÊN")
-root.geometry("900x600")
+root.title("QUẢN LÝ ĐIỂM SINH VIÊN")
+center_window(root, 1500, 600)  # Căn giữa cửa sổ chính
 
-# --- TẠO TAB (NOTEBOOK) ---
 notebook = ttk.Notebook(root)
 notebook.pack(pady=10, expand=True, fill="both")
+tab1 = tk.Frame(notebook);
+notebook.add(tab1, text=" SINH VIÊN ")
+tab2 = tk.Frame(notebook);
+notebook.add(tab2, text=" BẢNG ĐIỂM ")
 
-# Tạo 2 khung cho 2 tab
-tab1 = tk.Frame(notebook)
-tab2 = tk.Frame(notebook)
-
-notebook.add(tab1, text=" QUẢN LÝ HỒ SƠ SINH VIÊN ")
-notebook.add(tab2, text=" QUẢN LÝ BẢNG ĐIỂM & KẾT QUẢ ")
-
-# -------------------------------------------------------------------------
-# THIẾT KẾ TAB 1: SINH VIÊN
-# -------------------------------------------------------------------------
-f1 = tk.LabelFrame(tab1, text="Nhập liệu")
-f1.pack(fill="x", padx=10, pady=5)
-
+# --- TAB 1 ---
+f1 = tk.LabelFrame(tab1, text="Thông tin");
+f1.pack(fill="x", padx=10)
 tk.Label(f1, text="Mã SV:").grid(row=0, column=0);
 e1_ma = tk.Entry(f1);
 e1_ma.grid(row=0, column=1)
@@ -237,7 +282,7 @@ tk.Label(f1, text="Ngày Sinh:").grid(row=0, column=4);
 e1_ngay = DateEntry(f1, date_pattern="yyyy-mm-dd");
 e1_ngay.grid(row=0, column=5)
 tk.Label(f1, text="Giới Tính:").grid(row=1, column=0);
-e1_gt = ttk.Combobox(f1, values=["Nam", "Nu"], width=17);
+e1_gt = ttk.Combobox(f1, values=["Nam", "Nu"]);
 e1_gt.grid(row=1, column=1);
 e1_gt.set("Nam")
 tk.Label(f1, text="Mã Lớp:").grid(row=1, column=2);
@@ -247,57 +292,33 @@ tk.Label(f1, text="Mã Khoa:").grid(row=1, column=4);
 e1_khoa = tk.Entry(f1);
 e1_khoa.grid(row=1, column=5)
 
-btn_f1 = tk.Frame(tab1);
-btn_f1.pack(pady=5)
-tk.Button(btn_f1, text="Thêm SV", bg="green", fg="white",
+btn = tk.Frame(tab1);
+btn.pack(pady=5)
+tk.Button(btn, text="Thêm", bg="green", fg="white",
           command=lambda: them_sv(tree1, e1_ma, e1_ten, e1_ngay, e1_gt, e1_lop, e1_khoa)).pack(side="left", padx=5)
-tk.Button(btn_f1, text="Xóa SV", bg="red", fg="white", command=lambda: xoa_sv(tree1)).pack(side="left", padx=5)
-tk.Button(btn_f1, text="Tải lại danh sách", command=lambda: load_sv(tree1)).pack(side="left", padx=5)
-
+tk.Button(btn, text="Xóa", bg="red", fg="white", command=lambda: xoa_sv(tree1)).pack(side="left", padx=5)
+tk.Button(btn, text="Tải Lại", command=lambda: load_sv(tree1)).pack(side="left", padx=5)
 cols1 = ("MaSV", "HoTen", "NgaySinh", "GioiTinh", "MaLop", "MaKhoa")
 tree1 = ttk.Treeview(tab1, columns=cols1, show="headings", height=15)
 for c in cols1: tree1.heading(c, text=c)
-tree1.pack(fill="both", expand=True, padx=10, pady=5)
+tree1.pack(fill="both", expand=True, padx=10)
 load_sv(tree1)
 
-# -------------------------------------------------------------------------
-# TAB 2: BẢNG ĐIỂM
-# -------------------------------------------------------------------------
+# --- TAB 2 ---
 f2_top = tk.Frame(tab2);
 f2_top.pack(fill="x", padx=10, pady=10)
+tk.Button(f2_top, text="+ NHẬP ĐIỂM", bg="blue", fg="white", command=lambda: popup_nhap_diem(root, tree2)).pack(
+    side="left", padx=5)
 
-tk.Button(f2_top, text="+ NHẬP ĐIỂM MỚI", bg="blue", fg="white", font=("bold", 10), height=2,
-          command=lambda: popup_nhap_diem(root, tree2)).pack(side="left", padx=5)
+# Nút Xuất Excel
+tk.Button(f2_top, text="XUẤT EXCEL", bg="green", fg="white", command=xuat_excel_xlsxwriter).pack(side="left", padx=5)
 
-tk.Label(f2_top, text="Tìm tên SV:").pack(side="left", padx=(30, 5))
-e2_tim = tk.Entry(f2_top)
-e2_tim.pack(side="left")
-tk.Button(f2_top, text="Tìm kiếm", command=lambda: tim_kiem_diem(tree2, e2_tim.get())).pack(side="left", padx=5)
-tk.Button(f2_top, text="Hiện tất cả", command=lambda: load_diem(tree2)).pack(side="left", padx=5)
+tk.Button(f2_top, text="Tải lại", command=lambda: load_diem(tree2)).pack(side="left", padx=5)
 
-# Bảng điểm chi tiết
 cols2 = ("MaSV", "HoTen", "TenMon", "DiemQT", "DiemGK", "DiemCK", "TongKet", "KetQua")
 tree2 = ttk.Treeview(tab2, columns=cols2, show="headings", height=15)
-
-tree2.heading("MaSV", text="Mã SV")
-tree2.heading("HoTen", text="Họ Tên")
-tree2.heading("TenMon", text="Môn Học")
-tree2.heading("DiemQT", text="QT (20%)")
-tree2.heading("DiemGK", text="GK (30%)")
-tree2.heading("DiemCK", text="CK (50%)")
-tree2.heading("TongKet", text="T.Kết")
-tree2.heading("KetQua", text="Kết Quả")
-
-tree2.column("MaSV", width=80)
-tree2.column("HoTen", width=150)
-tree2.column("TenMon", width=150)
-tree2.column("DiemQT", width=60, anchor="center")
-tree2.column("DiemGK", width=60, anchor="center")
-tree2.column("DiemCK", width=60, anchor="center")
-tree2.column("TongKet", width=60, anchor="center")
-tree2.column("KetQua", width=80, anchor="center")
-
-tree2.pack(fill="both", expand=True, padx=10, pady=5)
+for c in cols2: tree2.heading(c, text=c)
+tree2.pack(fill="both", expand=True, padx=10)
 load_diem(tree2)
 
 root.mainloop()
